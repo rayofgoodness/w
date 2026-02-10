@@ -171,9 +171,12 @@
     this.create = function() {
       log('UaCatalog.create');
 
-      html = $('<div class="ua-catalog"></div>');
-      body = $('<div class="ua-catalog__body" style="display:flex;flex-wrap:wrap;padding:1.5em;gap:1.5em;"></div>');
-      scroll = new Lampa.Scroll({ mask: true, over: true, scroll_by_item: true });
+      html = $('<div class="category-full"></div>');
+      body = $('<div class="category-full__content" style="display:flex;flex-wrap:wrap;padding:1.5em;gap:1.5em;"></div>');
+      scroll = new Lampa.Scroll({ mask: true, over: true });
+
+      scroll.append(body);
+      html.append(scroll.render(true));
 
       return html;
     };
@@ -230,9 +233,6 @@
         } else {
           body.append('<div style="padding:2em;color:rgba(255,255,255,0.5);">Нічого не знайдено</div>');
         }
-
-        scroll.append(body);
-        html.append(scroll.render(true));
 
         Lampa.Controller.add('content', {
           toggle: function() {
@@ -293,6 +293,9 @@
       body = $('<div class="ua-item__body" style="padding:1.5em;"></div>');
       scroll = new Lampa.Scroll({ mask: true, over: true });
 
+      scroll.append(body);
+      html.append(scroll.render(true));
+
       return html;
     };
 
@@ -335,16 +338,18 @@
         // Render seasons selector
         comp.renderSeasonSelector();
 
-        scroll.append(body);
-        html.append(scroll.render(true));
-
         Lampa.Controller.add('content', {
           toggle: function() {
             Lampa.Controller.collectionSet(html);
             Lampa.Controller.collectionFocus(body.find('.selector').first(), html);
           },
-          left: function() { Lampa.Controller.toggle('menu'); },
-          right: function() {},
+          left: function() {
+            if (Navigator.canmove('left')) Navigator.move('left');
+            else Lampa.Controller.toggle('menu');
+          },
+          right: function() {
+            Navigator.move('right');
+          },
           up: function() {
             if (Navigator.canmove('up')) Navigator.move('up');
             else Lampa.Controller.toggle('head');
@@ -365,31 +370,32 @@
     };
 
     this.renderSeasonSelector = function() {
-      // Season selector (1-10)
+      // Season selector - vertical list for proper navigation
       var selectorDiv = $('<div class="ua-season-selector" style="margin:1em 0;"></div>');
       selectorDiv.append('<div style="color:rgba(255,255,255,0.7);margin-bottom:0.5em;">Оберіть сезон:</div>');
 
-      var seasonsRow = $('<div style="display:flex;flex-wrap:wrap;gap:0.5em;"></div>');
-
       for (var s = 1; s <= 10; s++) {
         (function(seasonNum) {
-          var seasonBtn = $('<div class="selector ua-season-btn" tabindex="0" style="padding:0.7em 1.2em;background:rgba(255,255,255,0.1);border-radius:0.3em;min-width:2em;text-align:center;"></div>');
-          seasonBtn.text(seasonNum);
+          var seasonBtn = $('<div class="selector ua-season-btn" tabindex="0" style="display:block;padding:0.7em 1.2em;margin:0.3em 0;background:rgba(255,255,255,0.1);border-radius:0.3em;width:fit-content;cursor:pointer;"></div>');
+          seasonBtn.text('Сезон ' + seasonNum);
           seasonBtn.data('season', seasonNum);
 
           seasonBtn.on('hover:focus', function() {
+            log('Season focus: ' + seasonNum);
             scroll.update(seasonBtn, true);
           });
 
           seasonBtn.on('hover:enter', function() {
+            log('Season selected: ' + seasonNum);
+            body.find('.ua-season-btn').css('background', 'rgba(255,255,255,0.1)');
+            seasonBtn.css('background', 'rgba(255,215,0,0.4)');
             comp.showEpisodes(seasonNum);
           });
 
-          seasonsRow.append(seasonBtn);
+          selectorDiv.append(seasonBtn);
         })(s);
       }
 
-      selectorDiv.append(seasonsRow);
       body.append(selectorDiv);
 
       // Episodes container
@@ -398,22 +404,23 @@
     };
 
     this.showEpisodes = function(seasonNum) {
+      log('showEpisodes called for season: ' + seasonNum);
+
       var container = body.find('.ua-episodes-container');
       container.empty();
 
-      container.append('<div style="color:#FFD700;font-size:1.2em;margin-bottom:0.5em;">Сезон ' + seasonNum + '</div>');
+      container.append('<div style="color:#FFD700;font-size:1.2em;margin-bottom:0.5em;">Серії сезону ' + seasonNum + ':</div>');
 
-      // Episode buttons (1-20 per season)
-      var episodesDiv = $('<div class="ua-episodes" style="display:flex;flex-wrap:wrap;gap:0.3em;"></div>');
-
+      // Episode buttons - vertical list for proper navigation
       for (var e = 1; e <= 20; e++) {
         (function(epNum) {
-          var epItem = $('<div class="selector ua-episode" tabindex="0" style="padding:0.6em 1em;background:rgba(255,255,255,0.1);border-radius:0.3em;min-width:2em;text-align:center;"></div>');
-          epItem.text(epNum);
+          var epItem = $('<div class="selector ua-episode" tabindex="0" style="display:block;padding:0.6em 1em;margin:0.3em 0;background:rgba(255,255,255,0.1);border-radius:0.3em;width:fit-content;cursor:pointer;"></div>');
+          epItem.text('Серія ' + epNum);
           epItem.data('season', seasonNum);
           epItem.data('episode', epNum);
 
           epItem.on('hover:focus', function() {
+            log('Episode focus: S' + seasonNum + 'E' + epNum);
             scroll.update(epItem, true);
           });
 
@@ -446,14 +453,14 @@
             });
           });
 
-          episodesDiv.append(epItem);
+          container.append(epItem);
         })(e);
       }
 
-      container.append(episodesDiv);
-
-      // Focus first episode
-      Lampa.Controller.collectionFocus(episodesDiv.find('.selector').first(), html);
+      // Update collection and focus first episode
+      log('Updating collection and focusing first episode');
+      Lampa.Controller.collectionSet(html);
+      Lampa.Controller.collectionFocus(container.find('.selector').first(), html);
     };
 
     this.renderSeasons = function(seasons) {
@@ -498,11 +505,11 @@
   $('head').append('<style>\
     .ua-main__item.focus, .ua-item .selector.focus { background: rgba(255,255,255,0.3) !important; }\
     .ua-episode.focus, .ua-season-btn.focus { background: rgba(255,215,0,0.4) !important; }\
-    .load-episodes.focus { background: #FFC107 !important; }\
-    .ua-catalog { height: 100%; }\
-    .ua-catalog__body { display: flex; flex-wrap: wrap; padding: 1.5em; gap: 1.5em; }\
-    .ua-catalog__body .card { margin: 0 !important; flex-shrink: 0; }\
-    .ua-main, .ua-item { height: 100%; }\
+    .category-full__content { gap: 1.5em; }\
+    .category-full__content .card { margin: 0.2em !important; }\
+    .ua-item, .ua-main, .category-full { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }\
+    .ua-item .scroll, .ua-main .scroll, .category-full .scroll { height: 100%; }\
+    .ua-item .scroll__content, .ua-main .scroll__content, .category-full .scroll__content { height: 100%; overflow-y: auto; }\
   </style>');
 
   // Start plugin
