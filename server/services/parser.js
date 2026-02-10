@@ -3,7 +3,7 @@ const axios = require('axios');
 
 const SOURCES = {
   uaserials: {
-    baseUrl: 'https://uaserials.org',
+    baseUrl: 'https://uaserials.com',
     categories: {
       series: '/series/',
       films: '/films/',

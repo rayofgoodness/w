@@ -45,158 +45,127 @@ async function extractAllEpisodes(url) {
 
   const seasons = [];
   const capturedData = [];
+  let decryptedPlaylist = null;
 
   try {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Capture all network responses that might contain playlist data
+    // Capture data-tag1 from HTML response
+    let tag1Data = null;
+    await page.setRequestInterception(true);
+    page.on('request', req => req.continue());
     page.on('response', async (response) => {
-      const respUrl = response.url();
-      const contentType = response.headers()['content-type'] || '';
-
-      // Look for JSON responses with playlist/episode data
-      if (contentType.includes('json') || respUrl.includes('playlist') || respUrl.includes('season')) {
+      if (response.url() === url) {
         try {
-          const text = await response.text();
-          if (text.includes('file') || text.includes('episode') || text.includes('season')) {
-            capturedData.push({ url: respUrl, data: text.substring(0, 500) });
+          const html = await response.text();
+          const match = html.match(/data-tag1='([^']+)'/);
+          if (match) {
+            tag1Data = match[1];
+            console.log('Captured data-tag1, length:', tag1Data.length);
           }
         } catch (e) {}
       }
     });
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await delay(8000);
+    await delay(5000);
 
-    console.log('Captured data count:', capturedData.length);
-
-    // Try to extract from page scripts
-    const scriptData = await page.evaluate(() => {
-      const result = { seasons: [], rawData: null };
-
-      // Look for playlist data in scripts
-      document.querySelectorAll('script').forEach(script => {
-        const text = script.textContent || '';
-
-        // Try to find player initialization with seasons data
-        const playlistMatch = text.match(/playlist\s*[=:]\s*(\[[\s\S]*?\])/);
-        if (playlistMatch) {
+    // Try to decrypt playlist using page's CryptoJSAesDecrypt
+    // KEY LOCATION: The decryption key is stored in JavaScript variable `dd` on the page
+    // As of 2025-02: dd = '297796CCB81D25512'
+    // The key is defined in the page's inline scripts and used with CryptoJSAesDecrypt function
+    // If decryption fails, the key may have changed - check the page source for new `dd` value
+    if (tag1Data) {
+      const decryptResult = await page.evaluate((encrypted) => {
+        if (typeof CryptoJSAesDecrypt === 'function' && typeof dd !== 'undefined') {
           try {
-            result.rawData = playlistMatch[1].substring(0, 500);
-          } catch (e) {}
+            const decrypted = CryptoJSAesDecrypt(dd, encrypted);
+            return { success: true, data: decrypted, key: dd };
+          } catch(e) {
+            return { success: false, error: e.message, key: typeof dd !== 'undefined' ? dd : null };
+          }
         }
+        return { success: false, error: 'CryptoJSAesDecrypt or dd not found' };
+      }, tag1Data);
 
-        // Look for seasons/episodes array
-        const seasonsMatch = text.match(/seasons?\s*[=:]\s*(\[[\s\S]*?\])/i);
-        if (seasonsMatch) {
-          result.rawData = seasonsMatch[1].substring(0, 500);
-        }
-      });
-
-      // Also check for AMSP player data
-      if (typeof AMSP !== 'undefined' && AMSP.playlist) {
-        result.amspPlaylist = JSON.stringify(AMSP.playlist).substring(0, 1000);
+      if (decryptResult.success) {
+        decryptedPlaylist = decryptResult.data;
+        console.log('Decryption key (dd):', decryptResult.key);
+      } else {
+        console.error('Decryption failed:', decryptResult.error);
+        console.log('Current key (dd):', decryptResult.key);
+        console.log('KEY MAY HAVE CHANGED! Check page source for new dd value.');
       }
 
-      return result;
-    });
+      if (decryptedPlaylist) {
+        console.log('Decrypted playlist successfully');
+        try {
+          const playlist = JSON.parse(decryptedPlaylist);
+          // Parse playlist structure: [{tabName, seasons: [{title, episodes: [{title, sounds: [{url}]}]}]}]
+          for (const tab of playlist) {
+            if (tab.seasons && Array.isArray(tab.seasons)) {
+              for (let si = 0; si < tab.seasons.length; si++) {
+                const season = tab.seasons[si];
+                const episodes = [];
 
-    console.log('Script data:', JSON.stringify(scriptData).substring(0, 300));
+                if (season.episodes && Array.isArray(season.episodes)) {
+                  for (let ei = 0; ei < season.episodes.length; ei++) {
+                    const ep = season.episodes[ei];
+                    // Get VOD URL from sounds array
+                    let vodUrl = null;
+                    if (ep.sounds && ep.sounds.length > 0) {
+                      vodUrl = ep.sounds[0].url;
+                    }
+                    episodes.push({
+                      number: ei + 1,
+                      title: ep.title || `Серія ${ei + 1}`,
+                      vodUrl: vodUrl
+                    });
+                  }
+                }
 
-    // If we couldn't get seasons from DOM/scripts, create fake seasons based on video URL pattern
-    // The video URL pattern is: stranger.things.s01e01 - we can assume standard season/episode numbering
-
-    // Get video URL to analyze the pattern
-    const videoUrl = capturedData.find(d => d.url.includes('.m3u8'))?.url || '';
-    console.log('Sample video URL:', videoUrl);
-
-    // Try to detect seasons from page content
-    const pageSeasons = await page.evaluate(() => {
-      const result = [];
-
-      // Look for season selectors in various player types
-      const seasonSelectors = [
-        '.plst-ss .plst-s',
-        '.seasons .season',
-        '[data-season]',
-        '.season-tab',
-        '.vs-select option'
-      ];
-
-      for (const sel of seasonSelectors) {
-        const els = document.querySelectorAll(sel);
-        if (els.length > 0) {
-          els.forEach((el, idx) => {
-            result.push({
-              number: idx + 1,
-              title: el.textContent?.trim() || `Сезон ${idx + 1}`
-            });
-          });
-          break;
+                seasons.push({
+                  number: si + 1,
+                  title: season.title || `Сезон ${si + 1}`,
+                  episodes
+                });
+              }
+            }
+          }
+          console.log(`Parsed ${seasons.length} seasons from decrypted playlist`);
+        } catch (e) {
+          console.error('Failed to parse decrypted playlist:', e.message);
         }
-      }
-
-      // Try to detect from URL pattern in video
-      return result;
-    });
-
-    console.log('Detected seasons from page:', pageSeasons.length);
-
-    if (pageSeasons.length > 0) {
-      // Use detected seasons
-      for (const s of pageSeasons) {
-        const episodes = [];
-        for (let e = 1; e <= 12; e++) {
-          episodes.push({ number: e, title: `Серія ${e}` });
-        }
-        seasons.push({
-          number: s.number,
-          title: s.title,
-          episodes
-        });
-      }
-    } else if (videoUrl) {
-      // Extract season/episode pattern from URL like s01e01
-      const match = videoUrl.match(/s(\d+)e(\d+)/i);
-      const maxSeason = match ? Math.max(parseInt(match[1]), 5) : 5;
-
-      // Create seasons based on URL pattern or default 5 seasons
-      for (let s = 1; s <= maxSeason; s++) {
-        const episodes = [];
-        for (let e = 1; e <= 12; e++) {
-          episodes.push({
-            number: e,
-            title: `Серія ${e}`
-          });
-        }
-        seasons.push({
-          number: s,
-          title: `Сезон ${s}`,
-          episodes
-        });
       }
     }
 
-    // Fallback: create default seasons for TV series
-    if (seasons.length <= 1) {
-      seasons.length = 0; // Clear and recreate
-      // Create 5 seasons with 12 episodes each as default for TV series
-      for (let s = 1; s <= 5; s++) {
-        const episodes = [];
-        for (let e = 1; e <= 12; e++) {
-          episodes.push({
-            number: e,
-            title: `Серія ${e}`
-          });
+    // Fallback: get season count from page title
+    if (seasons.length === 0) {
+      const titleSeasons = await page.evaluate(() => {
+        const title = document.title || '';
+        const rangeMatch = title.match(/(\d+)-(\d+)\s*сезон/i);
+        if (rangeMatch) return parseInt(rangeMatch[2]);
+        const listMatch = title.match(/([\d,\s]+)\s*сезон/i);
+        if (listMatch) {
+          const nums = listMatch[1].match(/\d+/g);
+          if (nums) return Math.max(...nums.map(n => parseInt(n)));
         }
-        seasons.push({
-          number: s,
-          title: `Сезон ${s}`,
-          episodes
-        });
+        return 0;
+      });
+
+      console.log('Seasons from title:', titleSeasons);
+
+      if (titleSeasons > 0) {
+        for (let s = 1; s <= titleSeasons; s++) {
+          const episodes = [];
+          for (let e = 1; e <= 24; e++) {
+            episodes.push({ number: e, title: `Серія ${e}` });
+          }
+          seasons.push({ number: s, title: `Сезон ${s}`, episodes });
+        }
+        console.log(`Created ${titleSeasons} seasons from title`);
       }
-      console.log('Created default 5 seasons');
     }
 
     console.log('Total seasons:', seasons.length);
@@ -220,64 +189,156 @@ async function extractEpisodeVideo(url, seasonNum, episodeNum) {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Capture base video URL pattern
-    let baseVideoUrl = null;
+    // Capture data-tag1 from HTML
+    let tag1Data = null;
+    await page.setRequestInterception(true);
+    page.on('request', req => req.continue());
+    page.on('response', async (response) => {
+      if (response.url() === url) {
+        try {
+          const html = await response.text();
+          const match = html.match(/data-tag1='([^']+)'/);
+          if (match) tag1Data = match[1];
+        } catch (e) {}
+      }
+    });
+
+    // Track captured video URLs
+    let capturedVideoUrl = null;
     page.on('response', (response) => {
       const respUrl = response.url();
-      if (respUrl.includes('.m3u8') && !baseVideoUrl) {
-        baseVideoUrl = respUrl;
-        console.log('Captured base video:', respUrl);
+      if (respUrl.includes('.m3u8')) {
+        capturedVideoUrl = respUrl;
+        console.log('Captured video:', respUrl);
       }
     });
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
     await delay(5000);
 
-    // If we got a base URL, try to modify it for the requested episode
-    if (baseVideoUrl) {
-      // Pattern: stranger.things.s01e01 -> stranger.things.s03e04
-      const sNum = String(seasonNum).padStart(2, '0');
-      const eNum = String(episodeNum).padStart(2, '0');
+    // Try to get VOD URL from decrypted playlist
+    // KEY LOCATION: See extractAllEpisodes for key documentation
+    let vodUrl = null;
+    if (tag1Data) {
+      const result = await page.evaluate((encrypted, sNum, eNum) => {
+        if (typeof CryptoJSAesDecrypt === 'function' && typeof dd !== 'undefined') {
+          try {
+            const decrypted = CryptoJSAesDecrypt(dd, encrypted);
+            const playlist = JSON.parse(decrypted);
+            for (const tab of playlist) {
+              if (tab.seasons && tab.seasons[sNum - 1]) {
+                const season = tab.seasons[sNum - 1];
+                if (season.episodes && season.episodes[eNum - 1]) {
+                  const ep = season.episodes[eNum - 1];
+                  if (ep.sounds && ep.sounds.length > 0) {
+                    return { vodUrl: ep.sounds[0].url, key: dd };
+                  }
+                }
+              }
+            }
+            return { vodUrl: null, key: dd, error: 'Episode not found in playlist' };
+          } catch(e) {
+            return { vodUrl: null, key: dd, error: e.message };
+          }
+        }
+        return { vodUrl: null, error: 'CryptoJSAesDecrypt or dd not found' };
+      }, tag1Data, seasonNum, episodeNum);
 
-      // Try to replace season/episode in URL
-      const modifiedUrl = baseVideoUrl
-        .replace(/\/s\d+\//g, `/s${sNum}/`)
-        .replace(/\.s\d+e\d+\./g, `.s${sNum}e${eNum}.`);
-
-      console.log('Modified video URL:', modifiedUrl);
-      return { videoUrl: modifiedUrl };
+      console.log('Decryption result:', result);
+      if (result.key) {
+        console.log('Decryption key (dd):', result.key);
+      }
+      if (result.error) {
+        console.log('KEY MAY HAVE CHANGED! Error:', result.error);
+      }
+      vodUrl = result.vodUrl;
     }
 
-    // Fallback: try clicking in player
-    console.log('Trying to click in player...');
+    if (vodUrl) {
+      console.log('Got VOD URL from playlist:', vodUrl);
+      // Extract video from VOD page
+      const vodPage = await browser.newPage();
+      try {
+        await vodPage.setViewport({ width: 1920, height: 1080 });
+        await vodPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Try to find and interact with AMSP player
-    const clickResult = await page.evaluate((sNum, eNum) => {
-      // Try AMSP player API
-      if (typeof AMSP !== 'undefined') {
-        try {
-          // Try to select season and episode via API
-          if (AMSP.setSeasons && AMSP.setEpisode) {
-            AMSP.setSeason(sNum - 1);
-            AMSP.setEpisode(eNum - 1);
-            return { method: 'AMSP API' };
+        let videoUrl = null;
+        vodPage.on('response', (response) => {
+          const respUrl = response.url();
+          if (respUrl.includes('.m3u8') && !videoUrl) {
+            videoUrl = respUrl;
+            console.log('VOD page captured m3u8:', respUrl);
           }
-        } catch (e) {}
+        });
+
+        console.log('Navigating to VOD page:', vodUrl);
+        await vodPage.goto(vodUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        await delay(5000);
+
+        if (videoUrl) {
+          console.log('Final video URL from VOD:', videoUrl);
+          return { videoUrl };
+        }
+        console.log('No m3u8 found on VOD page, checking for iframe...');
+
+        // Try to find video in iframe on VOD page
+        const vodIframe = await vodPage.evaluate(() => {
+          const iframe = document.querySelector('iframe');
+          return iframe ? iframe.src : null;
+        });
+
+        if (vodIframe) {
+          console.log('Found iframe on VOD page:', vodIframe);
+          // Navigate to iframe URL
+          await vodPage.goto(vodIframe, { waitUntil: 'networkidle2', timeout: 30000 });
+          await delay(3000);
+
+          if (videoUrl) {
+            console.log('Final video URL from VOD iframe:', videoUrl);
+            return { videoUrl };
+          }
+        }
+      } catch (vodError) {
+        console.error('VOD page error:', vodError.message);
+      } finally {
+        await vodPage.close();
+      }
+    }
+
+    console.log('Fallback: using captured video URL');
+
+    // Wait for new video URL to be captured
+    if (capturedVideoUrl) {
+      console.log('Final video URL:', capturedVideoUrl);
+
+      // Check if we got the correct episode or just the default S01E01
+      const isDefaultEpisode = capturedVideoUrl.includes('s01e01') && (seasonNum !== 1 || episodeNum !== 1);
+
+      if (isDefaultEpisode) {
+        console.log('Warning: Could not select specific episode, returning S01E01');
+        return {
+          videoUrl: capturedVideoUrl,
+          warning: 'Конкретна серія недоступна. Відтворюється S01E01.',
+          requestedSeason: seasonNum,
+          requestedEpisode: episodeNum
+        };
       }
 
-      // Try clicking on player elements
-      const iframe = document.querySelector('iframe[src*="ashdi"], iframe[src*="tortuga"], iframe[src*="player"]');
-      if (iframe) {
-        return { method: 'iframe found', src: iframe.src };
-      }
+      return { videoUrl: capturedVideoUrl };
+    }
 
-      return { method: 'none' };
-    }, seasonNum, episodeNum);
+    // Fallback: try to get video from iframe
+    const iframeSrc = await page.evaluate(() => {
+      const iframe = document.querySelector('iframe[src*="ashdi"], iframe[src*="tortuga"], iframe');
+      return iframe ? iframe.src : null;
+    });
 
-    console.log('Click result:', clickResult);
-    await delay(3000);
+    if (iframeSrc) {
+      console.log('Found iframe:', iframeSrc);
+      return { videoUrl: null, iframeSrc };
+    }
 
-    return { videoUrl: baseVideoUrl };
+    return { videoUrl: null, error: 'No video found' };
 
   } catch (error) {
     console.error('Episode video extraction error:', error.message);
