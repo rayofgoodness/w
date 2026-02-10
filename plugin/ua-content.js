@@ -11,6 +11,11 @@
     { id: 'anime', title: 'Аніме' }
   ];
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
   function log(msg) {
     console.log('[UA Plugin] ' + msg);
     // Also send to server for debugging
@@ -184,84 +189,140 @@
     this.start = function() {
       log('UaCatalog.start, loading data...');
 
+      var currentPage = object.page || 1;
+      var loading = false;
+      var loadMoreBtn = null;
+
       if (this.activity && this.activity.loader) {
         this.activity.loader(true);
       }
 
-      var url = API_URL + '/api/catalog/' + SOURCE + '/' + object.category + '?page=1';
-      log('Fetching: ' + url);
-
-      network.silent(url, function(data) {
-        log('Data received, items: ' + (data.results ? data.results.length : 0));
-
-        if (comp.activity && comp.activity.loader) {
-          comp.activity.loader(false);
-        }
-
-        if (data.results && data.results.length) {
-          data.results.forEach(function(item, index) {
-            var card = Lampa.Template.get('card', {
-              title: item.title,
-              release_year: item.year || ''
-            });
-
-            var img = card.find('.card__img')[0];
-            if (item.poster) {
-              img.onload = function() {
-                card.addClass('card--loaded');
-              };
-              img.src = API_URL + '/proxy?url=' + encodeURIComponent(item.poster);
-            }
-
-            card.on('hover:focus', function() {
-              scroll.update(card, true);
-            });
-
-            card.on('hover:enter', function() {
-              log('Card enter: ' + item.title);
-              Lampa.Activity.push({
-                title: item.title,
-                component: 'ua_item',
-                source: SOURCE,
-                item_id: item.id.split(':')[1],
-                poster: item.poster
-              });
-            });
-
-            body.append(card);
+      function appendCards(results) {
+        results.forEach(function(item) {
+          var card = Lampa.Template.get('card', {
+            title: item.title,
+            release_year: item.year || ''
           });
-        } else {
-          body.append('<div style="padding:2em;color:rgba(255,255,255,0.5);">Нічого не знайдено</div>');
-        }
 
-        Lampa.Controller.add('content', {
-          toggle: function() {
-            Lampa.Controller.collectionSet(html);
-            Lampa.Controller.collectionFocus(body.find('.selector').first(), html);
-          },
-          left: function() {
-            if (Navigator.canmove('left')) Navigator.move('left');
-            else Lampa.Controller.toggle('menu');
-          },
-          right: function() { Navigator.move('right'); },
-          up: function() {
-            if (Navigator.canmove('up')) Navigator.move('up');
-            else Lampa.Controller.toggle('head');
-          },
-          down: function() { Navigator.move('down'); },
-          back: function() { Lampa.Activity.backward(); }
+          var img = card.find('.card__img')[0];
+          if (item.poster) {
+            img.onload = function() {
+              card.addClass('card--loaded');
+            };
+            img.src = API_URL + '/proxy?url=' + encodeURIComponent(item.poster);
+          }
+
+          card.on('hover:focus', function() {
+            scroll.update(card, true);
+          });
+
+          card.on('hover:enter', function() {
+            log('Card enter: ' + item.title);
+            Lampa.Activity.push({
+              title: item.title,
+              component: 'ua_item',
+              source: SOURCE,
+              item_id: item.id.split(':')[1],
+              poster: item.poster
+            });
+          });
+
+          // Вставляємо перед кнопкою "Завантажити ще", якщо вона є
+          if (loadMoreBtn) {
+            loadMoreBtn.before(card);
+          } else {
+            body.append(card);
+          }
         });
+      }
 
-        Lampa.Controller.toggle('content');
-        log('UaCatalog render complete');
-
-      }, function(err) {
-        log('ERROR loading catalog: ' + (err.message || err.responseText || 'unknown'));
-        if (comp.activity && comp.activity.loader) {
-          comp.activity.loader(false);
+      function updateLoadMoreBtn(hasMore) {
+        if (loadMoreBtn) {
+          loadMoreBtn.remove();
+          loadMoreBtn = null;
         }
-        Lampa.Noty.show('Помилка завантаження');
-      });
+
+        if (hasMore) {
+          loadMoreBtn = $('<div class="selector ua-load-more" tabindex="0" style="width:100%;padding:1em;margin-top:1em;text-align:center;background:rgba(255,255,255,0.1);border-radius:0.5em;cursor:pointer;font-size:1.1em;"></div>');
+          loadMoreBtn.text('Завантажити ще');
+
+          loadMoreBtn.on('hover:focus', function() {
+            scroll.update(loadMoreBtn, true);
+          });
+
+          loadMoreBtn.on('hover:enter', function() {
+            if (loading) return;
+            loadPage(currentPage + 1);
+          });
+
+          body.append(loadMoreBtn);
+        }
+      }
+
+      function loadPage(page) {
+        loading = true;
+        if (loadMoreBtn) loadMoreBtn.text('Завантаження...');
+
+        var url = API_URL + '/api/catalog/' + SOURCE + '/' + object.category + '?page=' + page;
+        log('Fetching page ' + page + ': ' + url);
+
+        network.silent(url, function(data) {
+          loading = false;
+          currentPage = page;
+
+          log('Page ' + page + ' received, items: ' + (data.results ? data.results.length : 0));
+
+          if (comp.activity && comp.activity.loader) {
+            comp.activity.loader(false);
+          }
+
+          if (data.results && data.results.length) {
+            appendCards(data.results);
+            updateLoadMoreBtn(data.has_more);
+          } else if (page === 1) {
+            body.append($('<div style="padding:2em;color:rgba(255,255,255,0.5);"></div>').text('Нічого не знайдено'));
+          } else {
+            updateLoadMoreBtn(false);
+          }
+
+          Lampa.Controller.collectionSet(html);
+
+          if (page === 1) {
+            Lampa.Controller.add('content', {
+              toggle: function() {
+                Lampa.Controller.collectionSet(html);
+                Lampa.Controller.collectionFocus(body.find('.selector').first(), html);
+              },
+              left: function() {
+                if (Navigator.canmove('left')) Navigator.move('left');
+                else Lampa.Controller.toggle('menu');
+              },
+              right: function() { Navigator.move('right'); },
+              up: function() {
+                if (Navigator.canmove('up')) Navigator.move('up');
+                else Lampa.Controller.toggle('head');
+              },
+              down: function() { Navigator.move('down'); },
+              back: function() { Lampa.Activity.backward(); }
+            });
+
+            Lampa.Controller.toggle('content');
+          }
+
+          log('UaCatalog page ' + page + ' render complete');
+
+        }, function(err) {
+          loading = false;
+          log('ERROR loading catalog page ' + page + ': ' + (err.message || err.responseText || 'unknown'));
+          if (comp.activity && comp.activity.loader) {
+            comp.activity.loader(false);
+          }
+          if (loadMoreBtn) loadMoreBtn.text('Завантажити ще');
+          Lampa.Noty.show('Помилка завантаження');
+        });
+      }
+
+      loadPage(currentPage);
     };
 
     this.pause = function() {};
@@ -317,10 +378,10 @@
           comp.activity.loader(false);
         }
 
-        body.append('<div style="font-size:2em;font-weight:bold;margin-bottom:0.5em;">' + data.title + '</div>');
+        body.append($('<div style="font-size:2em;font-weight:bold;margin-bottom:0.5em;"></div>').text(data.title));
 
         if (data.original_title) {
-          body.append('<div style="color:rgba(255,255,255,0.6);margin-bottom:0.5em;">' + data.original_title + '</div>');
+          body.append($('<div style="color:rgba(255,255,255,0.6);margin-bottom:0.5em;"></div>').text(data.original_title));
         }
 
         // Info section
@@ -328,11 +389,11 @@
         if (data.year) info.push('Рік: ' + data.year);
         if (data.vote_average) info.push('Рейтинг: ' + data.vote_average);
         if (info.length) {
-          body.append('<div style="color:rgba(255,255,255,0.7);margin-bottom:1em;">' + info.join(' | ') + '</div>');
+          body.append($('<div style="color:rgba(255,255,255,0.7);margin-bottom:1em;"></div>').text(info.join(' | ')));
         }
 
         if (data.overview) {
-          body.append('<div style="line-height:1.5;margin-bottom:1.5em;max-width:60em;">' + data.overview + '</div>');
+          body.append($('<div style="line-height:1.5;margin-bottom:1.5em;max-width:60em;"></div>').text(data.overview));
         }
 
         // Render seasons selector
@@ -370,69 +431,109 @@
     };
 
     this.renderSeasonSelector = function() {
-      // Season selector - vertical list for proper navigation
-      var selectorDiv = $('<div class="ua-season-selector" style="margin:1em 0;"></div>');
-      selectorDiv.append('<div style="color:rgba(255,255,255,0.7);margin-bottom:0.5em;">Оберіть сезон:</div>');
+      if (!itemData.seasons || !itemData.seasons.length) {
+        // Фільм — одна кнопка "Дивитись"
+        var playBtn = $('<div class="selector" tabindex="0" style="display:inline-block;padding:0.8em 2em;margin:1em 0;background:rgba(255,215,0,0.3);border-radius:0.5em;font-size:1.2em;cursor:pointer;"></div>');
+        playBtn.text('Дивитись');
 
-      for (var s = 1; s <= 10; s++) {
-        (function(seasonNum) {
-          var seasonBtn = $('<div class="selector ua-season-btn" tabindex="0" style="display:block;padding:0.7em 1.2em;margin:0.3em 0;background:rgba(255,255,255,0.1);border-radius:0.3em;width:fit-content;cursor:pointer;"></div>');
-          seasonBtn.text('Сезон ' + seasonNum);
-          seasonBtn.data('season', seasonNum);
+        playBtn.on('hover:focus', function() {
+          scroll.update(playBtn, true);
+        });
 
-          seasonBtn.on('hover:focus', function() {
-            log('Season focus: ' + seasonNum);
-            scroll.update(seasonBtn, true);
+        playBtn.on('hover:enter', function() {
+          log('Play movie clicked');
+          Lampa.Noty.show('Завантаження...');
+
+          var videoUrl = API_URL + '/api/episode/' + object.source + '/' + object.item_id + '/1/1';
+          network.timeout(120000);
+          network.silent(videoUrl, function(videoData) {
+            if (videoData.videoUrl) {
+              log('Playing movie: ' + videoData.videoUrl);
+              Lampa.Player.play({
+                title: itemData.title,
+                url: videoData.videoUrl
+              });
+            } else {
+              Lampa.Noty.show('Відео не знайдено');
+            }
+          }, function(err) {
+            log('Movie video error: ' + (err.message || 'unknown'));
+            Lampa.Noty.show('Помилка завантаження');
           });
+        });
 
-          seasonBtn.on('hover:enter', function() {
-            log('Season selected: ' + seasonNum);
-            body.find('.ua-season-btn').css('background', 'rgba(255,255,255,0.1)');
-            seasonBtn.css('background', 'rgba(255,215,0,0.4)');
-            comp.showEpisodes(seasonNum);
-          });
-
-          selectorDiv.append(seasonBtn);
-        })(s);
+        body.append(playBtn);
+        body.append($('<div class="ua-episodes-container" style="margin-top:1em;"></div>'));
+        return;
       }
+
+      // Серіал — список сезонів з API
+      var selectorDiv = $('<div class="ua-season-selector" style="margin:1em 0;"></div>');
+      selectorDiv.append($('<div style="color:rgba(255,255,255,0.7);margin-bottom:0.5em;"></div>').text('Оберіть сезон:'));
+
+      itemData.seasons.forEach(function(season) {
+        var seasonBtn = $('<div class="selector ua-season-btn" tabindex="0" style="display:block;padding:0.7em 1.2em;margin:0.3em 0;background:rgba(255,255,255,0.1);border-radius:0.3em;width:fit-content;cursor:pointer;"></div>');
+        seasonBtn.text(season.name || 'Сезон ' + season.season_number);
+
+        seasonBtn.on('hover:focus', function() {
+          log('Season focus: ' + (season.name || season.season_number));
+          scroll.update(seasonBtn, true);
+        });
+
+        seasonBtn.on('hover:enter', function() {
+          log('Season selected: ' + (season.name || season.season_number));
+          body.find('.ua-season-btn').css('background', 'rgba(255,255,255,0.1)');
+          seasonBtn.css('background', 'rgba(255,215,0,0.4)');
+          comp.showEpisodes(season);
+        });
+
+        selectorDiv.append(seasonBtn);
+      });
 
       body.append(selectorDiv);
 
       // Episodes container
-      var episodesContainer = $('<div class="ua-episodes-container" style="margin-top:1em;"></div>');
-      body.append(episodesContainer);
+      body.append($('<div class="ua-episodes-container" style="margin-top:1em;"></div>'));
     };
 
-    this.showEpisodes = function(seasonNum) {
-      log('showEpisodes called for season: ' + seasonNum);
+    this.showEpisodes = function(season) {
+      log('showEpisodes called for season: ' + (season.name || season.season_number));
 
       var container = body.find('.ua-episodes-container');
       container.empty();
 
-      container.append('<div style="color:#FFD700;font-size:1.2em;margin-bottom:0.5em;">Серії сезону ' + seasonNum + ':</div>');
+      var header = $('<div style="color:#FFD700;font-size:1.2em;margin-bottom:0.5em;"></div>');
+      header.text('Серії — ' + (season.name || 'Сезон ' + season.season_number) + ':');
+      container.append(header);
 
-      // Episode buttons - vertical list for proper navigation
-      for (var e = 1; e <= 20; e++) {
-        (function(epNum) {
-          var epItem = $('<div class="selector ua-episode" tabindex="0" style="display:block;padding:0.6em 1em;margin:0.3em 0;background:rgba(255,255,255,0.1);border-radius:0.3em;width:fit-content;cursor:pointer;"></div>');
-          epItem.text('Серія ' + epNum);
-          epItem.data('season', seasonNum);
-          epItem.data('episode', epNum);
+      if (!season.episodes || !season.episodes.length) {
+        container.append($('<div style="padding:1em;color:rgba(255,255,255,0.5);"></div>').text('Серії не знайдено'));
+        return;
+      }
 
-          epItem.on('hover:focus', function() {
-            log('Episode focus: S' + seasonNum + 'E' + epNum);
-            scroll.update(epItem, true);
-          });
+      season.episodes.forEach(function(ep) {
+        var epItem = $('<div class="selector ua-episode" tabindex="0" style="display:block;padding:0.6em 1em;margin:0.3em 0;background:rgba(255,255,255,0.1);border-radius:0.3em;width:fit-content;cursor:pointer;"></div>');
+        epItem.text(ep.name || 'Серія ' + ep.episode_number);
 
-          epItem.on('hover:enter', function() {
-            var s = epItem.data('season');
-            var ep = epItem.data('episode');
-            log('Episode clicked: S' + s + 'E' + ep);
+        epItem.on('hover:focus', function() {
+          log('Episode focus: S' + season.season_number + 'E' + ep.episode_number);
+          scroll.update(epItem, true);
+        });
 
-            Lampa.Noty.show('Завантаження S' + s + 'E' + ep + '...');
-            epItem.css('background', 'rgba(255,215,0,0.3)');
+        epItem.on('hover:enter', function() {
+          log('Episode clicked: S' + season.season_number + 'E' + ep.episode_number);
+          Lampa.Noty.show('Завантаження S' + season.season_number + 'E' + ep.episode_number + '...');
+          epItem.css('background', 'rgba(255,215,0,0.3)');
 
-            var videoUrl = API_URL + '/api/episode/' + object.source + '/' + object.item_id + '/' + s + '/' + ep;
+          if (ep.video_url) {
+            log('Playing: ' + ep.video_url);
+            epItem.css('background', 'rgba(255,255,255,0.1)');
+            Lampa.Player.play({
+              title: itemData.title + ' - S' + season.season_number + 'E' + ep.episode_number,
+              url: ep.video_url
+            });
+          } else {
+            var videoUrl = API_URL + '/api/episode/' + object.source + '/' + object.item_id + '/' + season.season_number + '/' + ep.episode_number;
             network.timeout(120000);
             network.silent(videoUrl, function(videoData) {
               epItem.css('background', 'rgba(255,255,255,0.1)');
@@ -440,7 +541,7 @@
               if (videoData.videoUrl) {
                 log('Playing: ' + videoData.videoUrl);
                 Lampa.Player.play({
-                  title: itemData.title + ' - S' + s + 'E' + ep,
+                  title: itemData.title + ' - S' + season.season_number + 'E' + ep.episode_number,
                   url: videoData.videoUrl
                 });
               } else {
@@ -451,11 +552,11 @@
               log('Video error: ' + (err.message || 'unknown'));
               Lampa.Noty.show('Помилка завантаження');
             });
-          });
+          }
+        });
 
-          container.append(epItem);
-        })(e);
-      }
+        container.append(epItem);
+      });
 
       // Update collection and focus first episode
       log('Updating collection and focusing first episode');
@@ -504,7 +605,7 @@
   // CSS
   $('head').append('<style>\
     .ua-main__item.focus, .ua-item .selector.focus { background: rgba(255,255,255,0.3) !important; }\
-    .ua-episode.focus, .ua-season-btn.focus { background: rgba(255,215,0,0.4) !important; }\
+    .ua-episode.focus, .ua-season-btn.focus, .ua-load-more.focus { background: rgba(255,215,0,0.4) !important; }\
     .category-full__content { gap: 1.5em; height: 100%; overflow-y: auto; }\
     .category-full__content .card { margin: 0.2em !important; }\
     .ua-item, .ua-main, .category-full { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }\
