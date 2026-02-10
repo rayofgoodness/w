@@ -1,8 +1,9 @@
 module.exports = {
   apps: [{
     name: 'lampa-ua',
-    script: 'server/index.js',
-    cwd: __dirname,
+    script: 'index.js',
+    cwd: __dirname + '/server',
+    exec_mode: 'fork',
     instances: 1,
     autorestart: true,
     watch: false,

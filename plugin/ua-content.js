@@ -587,6 +587,10 @@
             epItem.removeClass('loading');
 
             if (videoData.videoUrl) {
+              // Show warning if specific episode not available
+              if (videoData.warning) {
+                Lampa.Noty.show(videoData.warning);
+              }
               log('Playing: ' + videoData.videoUrl);
               Lampa.Player.play({
                 title: itemData.title + ' - S' + seasonNum + 'E' + epNum,

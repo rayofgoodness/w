@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Backend API + Lampa TV plugin for Ukrainian streaming content. Serves movies, TV series, cartoons, and anime from uaserials.org to the Lampa media player (Android TV).
+Backend API + Lampa TV plugin for Ukrainian streaming content. Serves movies, TV series, cartoons, and anime from uaserials.com to the Lampa media player (Android TV).
 
 ## Commands
 
@@ -39,7 +39,7 @@ server/
 │   ├── search.js         # GET /api/search?q=&source= - search
 │   └── proxy.js          # GET /proxy?url= - CORS proxy for images/video
 ├── services/
-│   ├── parser.js         # HTML parsing with cheerio (uaserials.org structure)
+│   ├── parser.js         # HTML parsing with cheerio (uaserials.com structure)
 │   ├── cache.js          # PostgreSQL caching layer with TTL
 │   └── browser.js        # Puppeteer video extraction (m3u8/mp4 URLs)
 └── db/
@@ -93,10 +93,28 @@ Four tables: `cached_pages` (HTML cache with TTL), `items` (movies/series), `sea
 - Falls back to parsing AMSP player JavaScript for playlist data
 - Resource-intensive on Raspberry Pi; uses `--single-process` flag
 
+**Playlist Decryption**:
+- Episodes are encrypted in `data-tag1` attribute on uaserials pages
+- Decryption key stored in JavaScript variable `dd` on the page
+- Current key (as of 2025-02): `297796CCB81D25512`
+- Key location: inline `<script>` tags in page HTML
+- Decryption function: `CryptoJSAesDecrypt(dd, encryptedData)`
+- If decryption fails, check PM2 logs for "KEY MAY HAVE CHANGED" message
+- VOD URLs use double-encoded format: base64 decode, then reverse string
+
+**Troubleshooting key change**:
+```bash
+# Check current key in logs
+pm2 logs lampa-ua --lines 50 | grep "Decryption key"
+
+# Manually check key on page (in browser console)
+console.log(dd)  # Should output the key
+```
+
 **Source Configuration**:
 - Currently only `uaserials` implemented
 - Categories: `series`, `films`, `cartoons`, `anime`
-- URL pattern: `https://uaserials.org/{category}/` and `/{id}-{slug}.html`
+- URL pattern: `https://uaserials.com/{category}/` and `/{id}-{slug}.html`
 
 ## Environment
 
