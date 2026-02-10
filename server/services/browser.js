@@ -172,38 +172,74 @@ async function extractEpisodeVideo(url, seasonNum, episodeNum) {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Capture video URL
-    let videoUrl = null;
+    // Store all captured video URLs
+    let lastVideoUrl = null;
     page.on('response', (response) => {
       const respUrl = response.url();
-      if (respUrl.includes('.m3u8') && !videoUrl) {
-        videoUrl = respUrl;
-        console.log('Found video:', respUrl);
+      if (respUrl.includes('.m3u8')) {
+        lastVideoUrl = respUrl;
+        console.log('Captured video:', respUrl);
       }
     });
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await delay(5000);
+    await delay(3000);
 
-    // Click season if > 1
-    if (seasonNum > 1) {
-      await page.evaluate((idx) => {
-        const el = document.querySelectorAll('.plst-ss .plst-s')[idx];
-        if (el) el.click();
-      }, seasonNum - 1);
-      await delay(1500);
-    }
+    // Reset to capture new video after clicks
+    lastVideoUrl = null;
+    console.log(`Clicking season ${seasonNum}, episode ${episodeNum}...`);
+
+    // Click season
+    const seasonClicked = await page.evaluate((sNum) => {
+      // Try different selectors for seasons
+      const selectors = [
+        '.plst-ss .plst-s',
+        '[data-season]',
+        '.seasons-list .season',
+        '.season-item'
+      ];
+
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length >= sNum) {
+          els[sNum - 1].click();
+          return { clicked: true, selector: sel, count: els.length };
+        }
+      }
+      return { clicked: false };
+    }, seasonNum);
+
+    console.log('Season click result:', seasonClicked);
+    await delay(2000);
 
     // Click episode
-    await page.evaluate((idx) => {
-      const el = document.querySelectorAll('.plst-es .plst-e, .plst-e')[idx];
-      if (el) el.click();
-    }, episodeNum - 1);
+    const episodeClicked = await page.evaluate((eNum) => {
+      // Try different selectors for episodes
+      const selectors = [
+        '.plst-es .plst-e',
+        '.plst-e',
+        '[data-episode]',
+        '.episodes-list .episode',
+        '.episode-item'
+      ];
 
-    // Wait for video to load
-    await delay(4000);
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length >= eNum) {
+          els[eNum - 1].click();
+          return { clicked: true, selector: sel, count: els.length };
+        }
+      }
+      return { clicked: false };
+    }, episodeNum);
 
-    return { videoUrl };
+    console.log('Episode click result:', episodeClicked);
+
+    // Wait for video to load after clicking
+    await delay(5000);
+
+    console.log('Final video URL:', lastVideoUrl);
+    return { videoUrl: lastVideoUrl };
 
   } catch (error) {
     console.error('Episode video extraction error:', error.message);
