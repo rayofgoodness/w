@@ -1001,7 +1001,7 @@
     .ua-main__item:first-child { background: rgba(255,215,0,0.3); }\
     .ua-main__item.focus { background: rgba(255,255,255,0.3) !important; }\
     \
-    .ua-catalog { position: relative; height: 100%; padding: 1.5em; }\
+    .ua-catalog { position: relative; height: 100%; padding: 2em; }\
     .ua-catalog .scroll { height: 100%; }\
     .ua-catalog__body { display: flex; flex-wrap: wrap; gap: 1em; }\
     .ua-catalog__body .card { width: 12em; }\
