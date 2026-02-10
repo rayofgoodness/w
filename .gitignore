@@ -40,3 +40,4 @@ tmp/
 temp/
 .cache/
 workspace.xml
+.idea
