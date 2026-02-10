@@ -256,52 +256,40 @@ async function extractEpisodeVideo(url, seasonNum, episodeNum) {
 
     if (vodUrl) {
       console.log('Got VOD URL from playlist:', vodUrl);
-      // Extract video from VOD page
-      const vodPage = await browser.newPage();
+      // Fetch VOD page and extract encoded video URL from TortugaCore initialization
       try {
-        await vodPage.setViewport({ width: 1920, height: 1080 });
-        await vodPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        let videoUrl = null;
-        vodPage.on('response', (response) => {
-          const respUrl = response.url();
-          if (respUrl.includes('.m3u8') && !videoUrl) {
-            videoUrl = respUrl;
-            console.log('VOD page captured m3u8:', respUrl);
-          }
+        const https = require('https');
+        const vodHtml = await new Promise((resolve, reject) => {
+          https.get(vodUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve(data));
+          }).on('error', reject);
         });
 
-        console.log('Navigating to VOD page:', vodUrl);
-        await vodPage.goto(vodUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-        await delay(5000);
+        // Extract file parameter from TortugaCore initialization
+        // Pattern: file: "BASE64_ENCODED_REVERSED_URL"
+        const fileMatch = vodHtml.match(/file:\s*["']([A-Za-z0-9+/=]+)["']/);
+        if (fileMatch) {
+          const encoded = fileMatch[1];
+          console.log('Found encoded file:', encoded.substring(0, 50) + '...');
 
-        if (videoUrl) {
-          console.log('Final video URL from VOD:', videoUrl);
-          return { videoUrl };
-        }
-        console.log('No m3u8 found on VOD page, checking for iframe...');
+          // Decode: base64 decode, then reverse the string
+          const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+          const videoUrl = decoded.split('').reverse().join('');
 
-        // Try to find video in iframe on VOD page
-        const vodIframe = await vodPage.evaluate(() => {
-          const iframe = document.querySelector('iframe');
-          return iframe ? iframe.src : null;
-        });
+          console.log('Decoded video URL:', videoUrl);
 
-        if (vodIframe) {
-          console.log('Found iframe on VOD page:', vodIframe);
-          // Navigate to iframe URL
-          await vodPage.goto(vodIframe, { waitUntil: 'networkidle2', timeout: 30000 });
-          await delay(3000);
-
-          if (videoUrl) {
-            console.log('Final video URL from VOD iframe:', videoUrl);
+          if (videoUrl.includes('.m3u8')) {
             return { videoUrl };
           }
+        } else {
+          console.log('Could not find file parameter in VOD page');
         }
       } catch (vodError) {
-        console.error('VOD page error:', vodError.message);
-      } finally {
-        await vodPage.close();
+        console.error('VOD page fetch error:', vodError.message);
       }
     }
 
