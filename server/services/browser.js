@@ -111,44 +111,92 @@ async function extractAllEpisodes(url) {
     const videoUrl = capturedData.find(d => d.url.includes('.m3u8'))?.url || '';
     console.log('Sample video URL:', videoUrl);
 
-    if (videoUrl) {
+    // Try to detect seasons from page content
+    const pageSeasons = await page.evaluate(() => {
+      const result = [];
+
+      // Look for season selectors in various player types
+      const seasonSelectors = [
+        '.plst-ss .plst-s',
+        '.seasons .season',
+        '[data-season]',
+        '.season-tab',
+        '.vs-select option'
+      ];
+
+      for (const sel of seasonSelectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) {
+          els.forEach((el, idx) => {
+            result.push({
+              number: idx + 1,
+              title: el.textContent?.trim() || `Сезон ${idx + 1}`
+            });
+          });
+          break;
+        }
+      }
+
+      // Try to detect from URL pattern in video
+      return result;
+    });
+
+    console.log('Detected seasons from page:', pageSeasons.length);
+
+    if (pageSeasons.length > 0) {
+      // Use detected seasons
+      for (const s of pageSeasons) {
+        const episodes = [];
+        for (let e = 1; e <= 12; e++) {
+          episodes.push({ number: e, title: `Серія ${e}` });
+        }
+        seasons.push({
+          number: s.number,
+          title: s.title,
+          episodes
+        });
+      }
+    } else if (videoUrl) {
       // Extract season/episode pattern from URL like s01e01
       const match = videoUrl.match(/s(\d+)e(\d+)/i);
-      if (match) {
-        const maxSeason = parseInt(match[1]);
-        // Create placeholder seasons (we'll need to click to get actual videos)
-        for (let s = 1; s <= Math.max(maxSeason, 5); s++) {
-          const episodes = [];
-          // Assume 10 episodes per season as placeholder
-          for (let e = 1; e <= 10; e++) {
-            episodes.push({
-              number: e,
-              title: `Серія ${e}`
-            });
-          }
-          seasons.push({
-            number: s,
-            title: `Сезон ${s}`,
-            episodes
+      const maxSeason = match ? Math.max(parseInt(match[1]), 5) : 5;
+
+      // Create seasons based on URL pattern or default 5 seasons
+      for (let s = 1; s <= maxSeason; s++) {
+        const episodes = [];
+        for (let e = 1; e <= 12; e++) {
+          episodes.push({
+            number: e,
+            title: `Серія ${e}`
           });
         }
+        seasons.push({
+          number: s,
+          title: `Сезон ${s}`,
+          episodes
+        });
       }
     }
 
-    // If still no seasons, create a single season placeholder
-    if (seasons.length === 0) {
-      const episodes = [];
-      for (let e = 1; e <= 10; e++) {
-        episodes.push({
-          number: e,
-          title: `Серія ${e}`
+    // Fallback: create default seasons for TV series
+    if (seasons.length <= 1) {
+      seasons.length = 0; // Clear and recreate
+      // Create 5 seasons with 12 episodes each as default for TV series
+      for (let s = 1; s <= 5; s++) {
+        const episodes = [];
+        for (let e = 1; e <= 12; e++) {
+          episodes.push({
+            number: e,
+            title: `Серія ${e}`
+          });
+        }
+        seasons.push({
+          number: s,
+          title: `Сезон ${s}`,
+          episodes
         });
       }
-      seasons.push({
-        number: 1,
-        title: 'Сезон 1',
-        episodes
-      });
+      console.log('Created default 5 seasons');
     }
 
     console.log('Total seasons:', seasons.length);
@@ -172,74 +220,64 @@ async function extractEpisodeVideo(url, seasonNum, episodeNum) {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Store all captured video URLs
-    let lastVideoUrl = null;
+    // Capture base video URL pattern
+    let baseVideoUrl = null;
     page.on('response', (response) => {
       const respUrl = response.url();
-      if (respUrl.includes('.m3u8')) {
-        lastVideoUrl = respUrl;
-        console.log('Captured video:', respUrl);
+      if (respUrl.includes('.m3u8') && !baseVideoUrl) {
+        baseVideoUrl = respUrl;
+        console.log('Captured base video:', respUrl);
       }
     });
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await delay(3000);
-
-    // Reset to capture new video after clicks
-    lastVideoUrl = null;
-    console.log(`Clicking season ${seasonNum}, episode ${episodeNum}...`);
-
-    // Click season
-    const seasonClicked = await page.evaluate((sNum) => {
-      // Try different selectors for seasons
-      const selectors = [
-        '.plst-ss .plst-s',
-        '[data-season]',
-        '.seasons-list .season',
-        '.season-item'
-      ];
-
-      for (const sel of selectors) {
-        const els = document.querySelectorAll(sel);
-        if (els.length >= sNum) {
-          els[sNum - 1].click();
-          return { clicked: true, selector: sel, count: els.length };
-        }
-      }
-      return { clicked: false };
-    }, seasonNum);
-
-    console.log('Season click result:', seasonClicked);
-    await delay(2000);
-
-    // Click episode
-    const episodeClicked = await page.evaluate((eNum) => {
-      // Try different selectors for episodes
-      const selectors = [
-        '.plst-es .plst-e',
-        '.plst-e',
-        '[data-episode]',
-        '.episodes-list .episode',
-        '.episode-item'
-      ];
-
-      for (const sel of selectors) {
-        const els = document.querySelectorAll(sel);
-        if (els.length >= eNum) {
-          els[eNum - 1].click();
-          return { clicked: true, selector: sel, count: els.length };
-        }
-      }
-      return { clicked: false };
-    }, episodeNum);
-
-    console.log('Episode click result:', episodeClicked);
-
-    // Wait for video to load after clicking
     await delay(5000);
 
-    console.log('Final video URL:', lastVideoUrl);
-    return { videoUrl: lastVideoUrl };
+    // If we got a base URL, try to modify it for the requested episode
+    if (baseVideoUrl) {
+      // Pattern: stranger.things.s01e01 -> stranger.things.s03e04
+      const sNum = String(seasonNum).padStart(2, '0');
+      const eNum = String(episodeNum).padStart(2, '0');
+
+      // Try to replace season/episode in URL
+      const modifiedUrl = baseVideoUrl
+        .replace(/\/s\d+\//g, `/s${sNum}/`)
+        .replace(/\.s\d+e\d+\./g, `.s${sNum}e${eNum}.`);
+
+      console.log('Modified video URL:', modifiedUrl);
+      return { videoUrl: modifiedUrl };
+    }
+
+    // Fallback: try clicking in player
+    console.log('Trying to click in player...');
+
+    // Try to find and interact with AMSP player
+    const clickResult = await page.evaluate((sNum, eNum) => {
+      // Try AMSP player API
+      if (typeof AMSP !== 'undefined') {
+        try {
+          // Try to select season and episode via API
+          if (AMSP.setSeasons && AMSP.setEpisode) {
+            AMSP.setSeason(sNum - 1);
+            AMSP.setEpisode(eNum - 1);
+            return { method: 'AMSP API' };
+          }
+        } catch (e) {}
+      }
+
+      // Try clicking on player elements
+      const iframe = document.querySelector('iframe[src*="ashdi"], iframe[src*="tortuga"], iframe[src*="player"]');
+      if (iframe) {
+        return { method: 'iframe found', src: iframe.src };
+      }
+
+      return { method: 'none' };
+    }, seasonNum, episodeNum);
+
+    console.log('Click result:', clickResult);
+    await delay(3000);
+
+    return { videoUrl: baseVideoUrl };
 
   } catch (error) {
     console.error('Episode video extraction error:', error.message);
