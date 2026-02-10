@@ -21,6 +21,93 @@
     fetch(API_URL + '/log?msg=' + encodeURIComponent(msg)).catch(function(){});
   }
 
+  // Storage for series tracking
+  var STORAGE_KEY = 'ua_plugin_series_data';
+
+  function getStoredSeriesData() {
+    try {
+      var data = Lampa.Storage.get(STORAGE_KEY, '{}');
+      return typeof data === 'string' ? JSON.parse(data) : data;
+    } catch(e) {
+      return {};
+    }
+  }
+
+  function saveSeriesData(itemId, seasonsData) {
+    try {
+      var allData = getStoredSeriesData();
+      var totalEpisodes = 0;
+      var seasonCount = seasonsData.length;
+
+      seasonsData.forEach(function(season) {
+        totalEpisodes += (season.episodes ? season.episodes.length : 0);
+      });
+
+      allData[itemId] = {
+        seasons: seasonCount,
+        episodes: totalEpisodes,
+        lastCheck: Date.now(),
+        seasonDetails: seasonsData.map(function(s) {
+          return { number: s.number, episodes: s.episodes ? s.episodes.length : 0 };
+        })
+      };
+
+      Lampa.Storage.set(STORAGE_KEY, JSON.stringify(allData));
+      log('Saved series data for ' + itemId + ': ' + seasonCount + ' seasons, ' + totalEpisodes + ' episodes');
+    } catch(e) {
+      log('Error saving series data: ' + e.message);
+    }
+  }
+
+  function getStoredSeries(itemId) {
+    var allData = getStoredSeriesData();
+    return allData[itemId] || null;
+  }
+
+  function checkForNewEpisodes(itemId, newSeasonsData) {
+    var stored = getStoredSeries(itemId);
+    if (!stored) return null;
+
+    var newTotalEpisodes = 0;
+    var newSeasonCount = newSeasonsData.length;
+
+    newSeasonsData.forEach(function(season) {
+      newTotalEpisodes += (season.episodes ? season.episodes.length : 0);
+    });
+
+    var diff = {
+      hasNew: false,
+      newSeasons: newSeasonCount - stored.seasons,
+      newEpisodes: newTotalEpisodes - stored.episodes,
+      details: []
+    };
+
+    if (diff.newSeasons > 0 || diff.newEpisodes > 0) {
+      diff.hasNew = true;
+
+      // Find which seasons have new episodes
+      newSeasonsData.forEach(function(newSeason) {
+        var oldSeason = null;
+        if (stored.seasonDetails) {
+          stored.seasonDetails.forEach(function(s) {
+            if (s.number === newSeason.number) oldSeason = s;
+          });
+        }
+
+        var newEpCount = newSeason.episodes ? newSeason.episodes.length : 0;
+        var oldEpCount = oldSeason ? oldSeason.episodes : 0;
+
+        if (!oldSeason) {
+          diff.details.push('Новий сезон ' + newSeason.number + ' (' + newEpCount + ' серій)');
+        } else if (newEpCount > oldEpCount) {
+          diff.details.push('Сезон ' + newSeason.number + ': +' + (newEpCount - oldEpCount) + ' серій');
+        }
+      });
+    }
+
+    return diff;
+  }
+
   log('Script loaded');
 
   function startPlugin() {
@@ -204,6 +291,21 @@
 
         card.addClass('selector');
 
+        var itemId = item.id.split(':')[1];
+
+        // Check if we have stored data for this series (watched before)
+        var storedData = getStoredSeries(itemId);
+        if (storedData) {
+          card.addClass('ua-watched');
+          var watchedBadge = $('<div class="ua-card-badge ua-card-watched" title="Переглядали раніше">👁</div>');
+          card.find('.card__view').append(watchedBadge);
+
+          // Show episode count
+          var infoText = storedData.seasons + ' сез. / ' + storedData.episodes + ' сер.';
+          var infoBadge = $('<div class="ua-card-info"></div>').text(infoText);
+          card.find('.card__view').append(infoBadge);
+        }
+
         var img = card.find('.card__img')[0];
         if (item.poster) {
           img.onload = function() {
@@ -222,7 +324,7 @@
             title: item.title,
             component: 'ua_item',
             source: SOURCE,
-            item_id: item.id.split(':')[1],
+            item_id: itemId,
             poster: item.poster
           });
         });
@@ -411,6 +513,89 @@
         header.append(infoBlock);
         body.append(header);
 
+        // Action buttons row
+        var actionsRow = $('<div class="ua-actions-row"></div>');
+
+        // Play button
+        var playBtn = $('<div class="selector ua-action-btn" tabindex="0" data-action="play"></div>');
+        playBtn.html('<span class="ua-action-icon">▶</span><span class="ua-action-text">Дивитись</span>');
+        playBtn.on('hover:focus', function() { scroll.update(playBtn, true); });
+        playBtn.on('hover:enter', function() {
+          // Will be handled after seasons load
+          var firstEpisode = body.find('.ua-episode').first();
+          if (firstEpisode.length) {
+            firstEpisode.trigger('hover:enter');
+          } else {
+            var movieBtn = body.find('.ua-play-btn');
+            if (movieBtn.length) {
+              movieBtn.trigger('hover:enter');
+            }
+          }
+        });
+        actionsRow.append(playBtn);
+
+        // Bookmark button
+        var bookmarkBtn = $('<div class="selector ua-action-btn" tabindex="0" data-action="bookmark"></div>');
+        var isBookmarked = Lampa.Favorite && Lampa.Favorite.check && Lampa.Favorite.check({ id: object.item_id });
+        bookmarkBtn.html('<span class="ua-action-icon">' + (isBookmarked ? '★' : '☆') + '</span><span class="ua-action-text">Закладки</span>');
+        bookmarkBtn.on('hover:focus', function() { scroll.update(bookmarkBtn, true); });
+        bookmarkBtn.on('hover:enter', function() {
+          var favItem = {
+            id: object.item_id,
+            title: data.title,
+            original_title: data.original_title || '',
+            poster: object.poster || data.poster,
+            year: data.year,
+            vote_average: data.vote_average,
+            source: 'ua_plugin'
+          };
+
+          if (Lampa.Favorite) {
+            if (Lampa.Favorite.check && Lampa.Favorite.check(favItem)) {
+              Lampa.Favorite.remove && Lampa.Favorite.remove('book', favItem);
+              bookmarkBtn.find('.ua-action-icon').text('☆');
+              Lampa.Noty.show('Видалено із закладок');
+            } else {
+              Lampa.Favorite.add && Lampa.Favorite.add('book', favItem);
+              bookmarkBtn.find('.ua-action-icon').text('★');
+              Lampa.Noty.show('Додано в закладки');
+            }
+          }
+        });
+        actionsRow.append(bookmarkBtn);
+
+        // Like button
+        var likeBtn = $('<div class="selector ua-action-btn" tabindex="0" data-action="like"></div>');
+        var isLiked = Lampa.Favorite && Lampa.Favorite.check && Lampa.Favorite.check({ id: object.item_id, type: 'like' });
+        likeBtn.html('<span class="ua-action-icon">' + (isLiked ? '❤' : '♡') + '</span><span class="ua-action-text">Подобається</span>');
+        likeBtn.on('hover:focus', function() { scroll.update(likeBtn, true); });
+        likeBtn.on('hover:enter', function() {
+          var favItem = {
+            id: object.item_id,
+            title: data.title,
+            original_title: data.original_title || '',
+            poster: object.poster || data.poster,
+            year: data.year,
+            vote_average: data.vote_average,
+            source: 'ua_plugin'
+          };
+
+          if (Lampa.Favorite) {
+            if (Lampa.Favorite.check && Lampa.Favorite.check({ id: object.item_id, type: 'like' })) {
+              Lampa.Favorite.remove && Lampa.Favorite.remove('like', favItem);
+              likeBtn.find('.ua-action-icon').text('♡');
+              Lampa.Noty.show('Видалено з обраного');
+            } else {
+              Lampa.Favorite.add && Lampa.Favorite.add('like', favItem);
+              likeBtn.find('.ua-action-icon').text('❤');
+              Lampa.Noty.show('Додано в обране');
+            }
+          }
+        });
+        actionsRow.append(likeBtn);
+
+        body.append(actionsRow);
+
         // Setup controller
         Lampa.Controller.add('content', {
           toggle: function() {
@@ -448,6 +633,12 @@
       var loadingDiv = $('<div class="ua-loading">Завантаження сезонів...</div>');
       body.append(loadingDiv);
 
+      // Check if we have stored data for this series
+      var storedData = getStoredSeries(object.item_id);
+      if (storedData) {
+        log('Found stored data: ' + storedData.seasons + ' seasons, ' + storedData.episodes + ' episodes');
+      }
+
       var url = API_URL + '/api/episodes/' + object.source + '/' + object.item_id;
       log('Fetching seasons: ' + url);
 
@@ -457,6 +648,27 @@
         if (data.seasons && data.seasons.length) {
           seasonsData = data.seasons;
           log('Seasons loaded: ' + seasonsData.length);
+
+          // Check for new episodes
+          var diff = checkForNewEpisodes(object.item_id, seasonsData);
+          if (diff && diff.hasNew) {
+            log('New content found!');
+            var message = '';
+            if (diff.newSeasons > 0) {
+              message = 'Нових сезонів: ' + diff.newSeasons;
+            }
+            if (diff.newEpisodes > 0) {
+              message += (message ? ', ' : '') + 'нових серій: ' + diff.newEpisodes;
+            }
+            Lampa.Noty.show('🆕 ' + message, false, 5000);
+
+            // Show badge on title
+            comp.showNewBadge(diff);
+          }
+
+          // Save updated data
+          saveSeriesData(object.item_id, seasonsData);
+
           comp.renderSeasonSelector();
         } else {
           // Movie - single play button
@@ -468,6 +680,21 @@
         // Try movie player as fallback
         comp.renderMoviePlayer();
       });
+    };
+
+    this.showNewBadge = function(diff) {
+      // Add NEW badge to header
+      var badge = $('<span class="ua-new-badge">НОВЕ</span>');
+      body.find('.ua-item-title').append(badge);
+
+      // Add details tooltip
+      if (diff.details && diff.details.length) {
+        var detailsDiv = $('<div class="ua-new-details"></div>');
+        diff.details.forEach(function(detail) {
+          detailsDiv.append($('<div></div>').text(detail));
+        });
+        body.find('.ua-item-info').append(detailsDiv);
+      }
     };
 
     this.renderMoviePlayer = function() {
@@ -795,6 +1022,13 @@
     .ua-item-meta { color: #FFD700; margin-bottom: 0.8em; font-size: 1.1em; }\
     .ua-item-desc { line-height: 1.5; color: rgba(255,255,255,0.85); max-width: 50em; }\
     \
+    .ua-actions-row { display: flex; gap: 1em; margin: 1.5em 0; flex-wrap: wrap; }\
+    .ua-action-btn { display: flex; align-items: center; gap: 0.5em; padding: 0.8em 1.5em; background: rgba(255,255,255,0.1); border-radius: 0.5em; font-size: 1.1em; cursor: pointer; }\
+    .ua-action-btn.focus { background: rgba(255,215,0,0.5) !important; transform: scale(1.05); }\
+    .ua-action-btn[data-action="play"] { background: rgba(255,215,0,0.3); }\
+    .ua-action-icon { font-size: 1.3em; }\
+    .ua-action-text { white-space: nowrap; }\
+    \
     .ua-play-btn { display: inline-block; padding: 0.8em 2em; margin: 1em 0; background: rgba(255,215,0,0.3); border-radius: 0.5em; font-size: 1.2em; }\
     .ua-play-btn.focus { background: rgba(255,215,0,0.5) !important; }\
     \
@@ -813,6 +1047,16 @@
     \
     .ua-loading { color: rgba(255,255,255,0.6); padding: 1em 0; }\
     .ua-no-content { color: rgba(255,255,255,0.5); padding: 1em 0; }\
+    \
+    .ua-new-badge { display: inline-block; margin-left: 0.5em; padding: 0.2em 0.6em; background: #ff4444; color: #fff; font-size: 0.5em; font-weight: bold; border-radius: 0.3em; vertical-align: middle; animation: ua-pulse 1.5s infinite; }\
+    @keyframes ua-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }\
+    .ua-new-details { margin-top: 1em; padding: 0.8em; background: rgba(255,68,68,0.2); border-left: 3px solid #ff4444; border-radius: 0.3em; font-size: 0.95em; }\
+    .ua-new-details div { padding: 0.2em 0; }\
+    \
+    .ua-card-badge { position: absolute; top: 0.3em; right: 0.3em; padding: 0.2em 0.4em; border-radius: 0.3em; font-size: 0.8em; z-index: 2; }\
+    .ua-card-watched { background: rgba(0,0,0,0.7); }\
+    .ua-card-info { position: absolute; bottom: 0; left: 0; right: 0; padding: 0.3em; background: linear-gradient(transparent, rgba(0,0,0,0.9)); font-size: 0.75em; text-align: center; z-index: 2; }\
+    .ua-watched .card__img { opacity: 0.8; }\
   ';
 
   $('head').append('<style>' + styles + '</style>');
