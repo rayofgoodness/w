@@ -39,5 +39,3 @@ docker-compose.override.yml
 tmp/
 temp/
 .cache/
-workspace.xml
-.idea
