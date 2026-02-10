@@ -505,7 +505,7 @@
   $('head').append('<style>\
     .ua-main__item.focus, .ua-item .selector.focus { background: rgba(255,255,255,0.3) !important; }\
     .ua-episode.focus, .ua-season-btn.focus { background: rgba(255,215,0,0.4) !important; }\
-    .category-full__content { gap: 1.5em; }\
+    .category-full__content { gap: 1.5em; height: 100%; overflow-y: auto; }\
     .category-full__content .card { margin: 0.2em !important; }\
     .ua-item, .ua-main, .category-full { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }\
     .ua-item .scroll, .ua-main .scroll, .category-full .scroll { height: 100%; }\
